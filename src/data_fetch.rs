@@ -80,8 +80,8 @@ pub async fn predict_iv(
     }
 
     if expiry_iv_pairs.len() < 3 {
-        println!("Not enough data for hyperbolic regression (need at least 3 points).");
-        return Err("Not enough data for hyperbolic regression".into());
+        println!("Not enough data for reciprocal regression (need at least 3 points).");
+        return Err("Not enough data for reciprocal regression".into());
     }
 
     expiry_iv_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -94,59 +94,67 @@ pub async fn predict_iv(
     let x_std: f64 = (xs.iter().map(|x| (x - x_mean).powi(2)).sum::<f64>() / n as f64).sqrt();
     let xs_norm: Vec<f64> = xs.iter().map(|x| (x - x_mean) / x_std).collect();
 
-    let c_param = 1.0;
+    let mut best_c = 1.0;
+    let mut best_err = f64::INFINITY;
+    let mut best_a = 0.0;
+    let mut best_b = 0.0;
 
-    let mut a_hyp = DMatrix::zeros(n, 2);
-    for i in 0..n {
-        a_hyp[(i, 0)] = 1.0;
-        a_hyp[(i, 1)] = 1.0 / (xs_norm[i] + c_param);
+    for c_try in (1..1000).map(|i| i as f64 * 0.01) {
+        let rec_terms: Vec<f64> = xs_norm.iter().map(|&x| 1.0 / (x + c_try)).collect();
+        let mut a_mat = DMatrix::zeros(n, 2);
+        for i in 0..n {
+            a_mat[(i, 0)] = 1.0;
+            a_mat[(i, 1)] = rec_terms[i];
+        }
+        let b_vec = DVector::from_iterator(n, ys.iter().cloned());
+        let lhs = a_mat.transpose() * &a_mat;
+        let rhs = a_mat.transpose() * &b_vec;
+        if let Some(coeffs) = lhs.lu().solve(&rhs) {
+            let a = coeffs[0];
+            let b = coeffs[1];
+            let err = ys.iter().enumerate().map(|(i, &y)| {
+                let y_pred = a + b * rec_terms[i];
+                (y - y_pred).powi(2)
+            }).sum::<f64>();
+            if err < best_err {
+                best_err = err;
+                best_c = c_try;
+                best_a = a;
+                best_b = b;
+            }
+        }
     }
 
-    let b_hyp = DVector::from_iterator(n, ys.iter().cloned());
-    let a_t_hyp = a_hyp.transpose();
-    let lhs_hyp = &a_t_hyp * &a_hyp;
-    let rhs_hyp = &a_t_hyp * &b_hyp;
-
-    let hyperbolic_coeffs = match lhs_hyp.lu().solve(&rhs_hyp) {
-        Some(coeffs) => coeffs,
-        None => {
-            let mean_iv = ys.iter().sum::<f64>() / ys.len() as f64;
-            println!("Predicted IV at expiry {} (mean): {:.2}%", predict_expiry, mean_iv * 100.0);
-            return Ok(mean_iv);
-        }
-    };
-
-    let a_val = hyperbolic_coeffs[0];
-    let b_val = hyperbolic_coeffs[1];
-
-    let hyp_eval = |x: f64| -> f64 {
+    let rec_eval = |x: f64| {
         let x_norm = (x - x_mean) / x_std;
-        a_val + b_val / (x_norm + c_param)
+        let iv = best_a + best_b / (x_norm + best_c);
+        iv.max(0.0)
     };
 
-    let predicted_iv = hyp_eval(predict_expiry as f64);
+    let predicted_iv = rec_eval(predict_expiry as f64);
+
     println!(
-        "Predicted IV at expiry {} (hyperbolic): {:.2}%",
+        "Predicted IV at expiry {} (reciprocal): {:.2}%",
         predict_expiry,
         predicted_iv * 100.0
     );
 
-    plot_iv_curve_hyperbolic(
+    plot_iv_curve_reciprocal(
         expiries,
         expiry_iv_pairs,
         predict_expiry,
         predicted_iv,
         x_mean,
         x_std,
-        a_val,
-        b_val,
-        c_param,
+        best_a,
+        best_b,
+        best_c,
     )?;
 
     Ok(predicted_iv)
 }
 
-fn plot_iv_curve_hyperbolic(
+fn plot_iv_curve_reciprocal(
     expiries: Vec<u64>,
     expiry_iv_pairs: Vec<(f64, f64)>, 
     predict_expiry: u64,
@@ -157,33 +165,34 @@ fn plot_iv_curve_hyperbolic(
     b: f64,
     c: f64
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let root = BitMapBackend::new("iv_hyperbolic.png", (800, 600)).into_drawing_area();
+    let root = BitMapBackend::new("iv_reciprocal.png", (800, 600)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let min_expiry = *expiries.iter().min().unwrap() as f64;
     let max_expiry = *expiries.iter().max().unwrap() as f64;
-    
+
     let min_iv = expiry_iv_pairs.iter().map(|(_, iv)| *iv).fold(f64::INFINITY, f64::min);
     let max_iv = expiry_iv_pairs.iter().map(|(_, iv)| *iv).fold(f64::NEG_INFINITY, f64::max);
 
-    let hyp_eval = |x: f64| -> f64 {
+    let rec_eval = |x: f64| -> f64 {
         let x_norm = (x - x_mean) / x_std;
-        a + b / (x_norm + c)
+        let iv = a + b / (x_norm + c);
+        iv.max(0.0)
     };
-    
-    let hyp_min = hyp_eval(min_expiry);
-    let hyp_max = hyp_eval(max_expiry);
-    let hyp_mid = hyp_eval((min_expiry + max_expiry) / 2.0);
-    
-    let min_iv = min_iv.min(hyp_min).min(hyp_mid).min(predicted_iv);
-    let max_iv = max_iv.max(hyp_max).max(hyp_mid).max(predicted_iv);
-    
+
+    let rec_min = rec_eval(min_expiry);
+    let rec_max = rec_eval(max_expiry);
+    let rec_mid = rec_eval((min_expiry + max_expiry) / 2.0);
+
+    let min_iv = min_iv.min(rec_min).min(rec_mid).min(predicted_iv);
+    let max_iv = max_iv.max(rec_max).max(rec_mid).max(predicted_iv);
+
     let padding = (max_iv - min_iv) * 0.1;
     let min_iv = min_iv - padding;
     let max_iv = max_iv + padding;
 
     let mut chart = ChartBuilder::on(&root)
-        .caption("IV Hyperbolic Model", ("sans-serif", 30))
+        .caption("IV Reciprocal Model", ("sans-serif", 30))
         .margin(40)
         .x_label_area_size(40)
         .y_label_area_size(60)
@@ -203,10 +212,10 @@ fn plot_iv_curve_hyperbolic(
     let curve_points: Vec<(f64, f64)> = (0..=steps)
         .map(|i| {
             let x = min_expiry + step * i as f64;
-            (x, hyp_eval(x))
+            (x, rec_eval(x))
         })
         .collect();
-    
+
     chart.draw_series(LineSeries::new(curve_points, &BLUE))?;
 
     chart.draw_series(std::iter::once(Circle::new(
@@ -215,9 +224,10 @@ fn plot_iv_curve_hyperbolic(
         GREEN.filled(),
     )))?;
 
+    println!("Plot saved as iv_reciprocal.png");
+
     Ok(())
 }
-
 
 pub async fn fetch_closest_iv_for_expiry(
     symbol: &str,
