@@ -28,6 +28,7 @@ pub async fn predict_iv(
     symbol: &str,
     input_strike: f64,
     predict_expiry: u64,
+    option_type: &str
 ) -> Result<f64, Box<dyn std::error::Error>> {
     let url = format!("https://finance.yahoo.com/quote/{}/options", symbol);
 
@@ -69,7 +70,7 @@ pub async fn predict_iv(
     let mut expiry_iv_pairs = Vec::new();
 
     for expiry in &expiries {
-        match fetch_closest_iv_for_expiry(symbol, *expiry, input_strike).await {
+        match fetch_closest_iv_for_expiry(symbol, *expiry, input_strike, option_type).await {
             Ok(iv) => {
                 println!("Expiry {}: Closest IV = {:.2}%", expiry, iv * 100.0);
                 expiry_iv_pairs.push((*expiry as f64, iv));
@@ -218,7 +219,12 @@ fn plot_iv_curve_hyperbolic(
 }
 
 
-pub async fn fetch_closest_iv_for_expiry(symbol: &str, expiry: u64, input_strike: f64) -> Result<f64, Box<dyn std::error::Error>> {
+pub async fn fetch_closest_iv_for_expiry(
+    symbol: &str,
+    expiry: u64,
+    input_strike: f64,
+    option_type: &str,
+) -> Result<f64, Box<dyn std::error::Error>> {
     let url = format!("https://finance.yahoo.com/quote/{}/options?date={}", symbol, expiry);
 
     let client = reqwest::Client::new();
@@ -230,14 +236,26 @@ pub async fn fetch_closest_iv_for_expiry(symbol: &str, expiry: u64, input_strike
     let body = resp.text().await?;
 
     let document = scraper::Html::parse_document(&body);
-    let row_selector = Selector::parse("tr.yf-wurt5d.inTheMoney").unwrap();
+
+    let table_selector = Selector::parse("table.yf-wurt5d").unwrap();
+    let tables: Vec<_> = document.select(&table_selector).collect();
+
+    let table_index = match option_type {
+        "put" => 1,
+        _ => 0,
+    };
+
+    let table = tables.get(table_index)
+        .ok_or_else(|| format!("Could not find {} table", option_type))?;
+
+    let row_selector = Selector::parse("tr.yf-wurt5d").unwrap();
     let cell_selector = Selector::parse("td.yf-wurt5d").unwrap();
     let bold_selector = Selector::parse("td.bold.yf-wurt5d").unwrap();
 
     let mut best_iv: Option<f64> = None;
     let mut min_diff = f64::MAX;
 
-    for row in document.select(&row_selector) {
+    for row in table.select(&row_selector) {
         let cells: Vec<_> = row.select(&cell_selector).collect();
         let bold_cells: Vec<_> = row.select(&bold_selector).collect();
 
@@ -260,7 +278,7 @@ pub async fn fetch_closest_iv_for_expiry(symbol: &str, expiry: u64, input_strike
         }
     }
 
-    best_iv.ok_or_else(|| "No in-the-money calls with nonzero IV found in HTML".into())
+    best_iv.ok_or_else(|| format!("No in-the-money {}s with nonzero IV found in HTML", option_type).into())
 }
 
 pub async fn fetch_stock_price(symbol: &str) -> Result<f64, Box<dyn std::error::Error>> {
