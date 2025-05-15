@@ -1,6 +1,7 @@
 use serde_json;
-use scraper::{Html, Selector};
-
+use plotters::prelude::*;
+use scraper::{Selector};
+use nalgebra::{DMatrix, DVector};
 
 pub async fn fetch_risk_free_rate(api_key: &str) -> Result<f64, Box<dyn std::error::Error>> {
     let url = format!(
@@ -23,7 +24,11 @@ pub async fn fetch_risk_free_rate(api_key: &str) -> Result<f64, Box<dyn std::err
     Err("Failed to parse risk-free rate".into())
 }
 
-pub async fn print_all_expiry_ivs(symbol: &str, input_strike: f64) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn predict_iv(
+    symbol: &str,
+    input_strike: f64,
+    predict_expiry: u64,
+) -> Result<f64, Box<dyn std::error::Error>> {
     let url = format!("https://finance.yahoo.com/quote/{}/options", symbol);
 
     let client = reqwest::Client::new();
@@ -61,12 +66,153 @@ pub async fn print_all_expiry_ivs(symbol: &str, input_strike: f64) -> Result<(),
         return Err("Could not find expiration dates".into());
     }
 
-    for expiry in expiries {
-        match fetch_closest_iv_for_expiry(symbol, expiry, input_strike).await {
-            Ok(iv) => println!("Expiry {}: Closest IV = {:.2}%", expiry, iv * 100.0),
+    let mut expiry_iv_pairs = Vec::new();
+
+    for expiry in &expiries {
+        match fetch_closest_iv_for_expiry(symbol, *expiry, input_strike).await {
+            Ok(iv) => {
+                println!("Expiry {}: Closest IV = {:.2}%", expiry, iv * 100.0);
+                expiry_iv_pairs.push((*expiry as f64, iv));
+            }
             Err(e) => println!("Expiry {}: Error fetching IV: {}", expiry, e),
         }
     }
+
+    if expiry_iv_pairs.len() < 3 {
+        println!("Not enough data for hyperbolic regression (need at least 3 points).");
+        return Err("Not enough data for hyperbolic regression".into());
+    }
+
+    expiry_iv_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let n = expiry_iv_pairs.len();
+    let xs: Vec<f64> = expiry_iv_pairs.iter().map(|(e, _)| *e).collect();
+    let ys: Vec<f64> = expiry_iv_pairs.iter().map(|(_, iv)| *iv).collect();
+
+    let x_mean: f64 = xs.iter().sum::<f64>() / n as f64;
+    let x_std: f64 = (xs.iter().map(|x| (x - x_mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+    let xs_norm: Vec<f64> = xs.iter().map(|x| (x - x_mean) / x_std).collect();
+
+    let c_param = 1.0;
+
+    let mut a_hyp = DMatrix::zeros(n, 2);
+    for i in 0..n {
+        a_hyp[(i, 0)] = 1.0;
+        a_hyp[(i, 1)] = 1.0 / (xs_norm[i] + c_param);
+    }
+
+    let b_hyp = DVector::from_iterator(n, ys.iter().cloned());
+    let a_t_hyp = a_hyp.transpose();
+    let lhs_hyp = &a_t_hyp * &a_hyp;
+    let rhs_hyp = &a_t_hyp * &b_hyp;
+
+    let hyperbolic_coeffs = match lhs_hyp.lu().solve(&rhs_hyp) {
+        Some(coeffs) => coeffs,
+        None => {
+            let mean_iv = ys.iter().sum::<f64>() / ys.len() as f64;
+            println!("Predicted IV at expiry {} (mean): {:.2}%", predict_expiry, mean_iv * 100.0);
+            return Ok(mean_iv);
+        }
+    };
+
+    let a_val = hyperbolic_coeffs[0];
+    let b_val = hyperbolic_coeffs[1];
+
+    let hyp_eval = |x: f64| -> f64 {
+        let x_norm = (x - x_mean) / x_std;
+        a_val + b_val / (x_norm + c_param)
+    };
+
+    let predicted_iv = hyp_eval(predict_expiry as f64);
+    println!(
+        "Predicted IV at expiry {} (hyperbolic): {:.2}%",
+        predict_expiry,
+        predicted_iv * 100.0
+    );
+
+    plot_iv_curve_hyperbolic(
+        expiries,
+        expiry_iv_pairs,
+        predict_expiry,
+        predicted_iv,
+        x_mean,
+        x_std,
+        a_val,
+        b_val,
+        c_param,
+    )?;
+
+    Ok(predicted_iv)
+}
+
+fn plot_iv_curve_hyperbolic(
+    expiries: Vec<u64>,
+    expiry_iv_pairs: Vec<(f64, f64)>, 
+    predict_expiry: u64,
+    predicted_iv: f64,
+    x_mean: f64,
+    x_std: f64,
+    a: f64,
+    b: f64,
+    c: f64
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new("iv_hyperbolic.png", (800, 600)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let min_expiry = *expiries.iter().min().unwrap() as f64;
+    let max_expiry = *expiries.iter().max().unwrap() as f64;
+    
+    let min_iv = expiry_iv_pairs.iter().map(|(_, iv)| *iv).fold(f64::INFINITY, f64::min);
+    let max_iv = expiry_iv_pairs.iter().map(|(_, iv)| *iv).fold(f64::NEG_INFINITY, f64::max);
+
+    let hyp_eval = |x: f64| -> f64 {
+        let x_norm = (x - x_mean) / x_std;
+        a + b / (x_norm + c)
+    };
+    
+    let hyp_min = hyp_eval(min_expiry);
+    let hyp_max = hyp_eval(max_expiry);
+    let hyp_mid = hyp_eval((min_expiry + max_expiry) / 2.0);
+    
+    let min_iv = min_iv.min(hyp_min).min(hyp_mid).min(predicted_iv);
+    let max_iv = max_iv.max(hyp_max).max(hyp_mid).max(predicted_iv);
+    
+    let padding = (max_iv - min_iv) * 0.1;
+    let min_iv = min_iv - padding;
+    let max_iv = max_iv + padding;
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption("IV Hyperbolic Model", ("sans-serif", 30))
+        .margin(40)
+        .x_label_area_size(40)
+        .y_label_area_size(60)
+        .build_cartesian_2d(min_expiry..max_expiry, min_iv..max_iv)?;
+
+    chart.configure_mesh()
+        .x_desc("Expiry (timestamp)")
+        .y_desc("Implied Volatility")
+        .draw()?;
+
+    chart.draw_series(
+        expiry_iv_pairs.iter().map(|(e, iv)| Circle::new((*e, *iv), 5, RED.filled()))
+    )?;
+
+    let steps = 200;
+    let step = (max_expiry - min_expiry) / steps as f64;
+    let curve_points: Vec<(f64, f64)> = (0..=steps)
+        .map(|i| {
+            let x = min_expiry + step * i as f64;
+            (x, hyp_eval(x))
+        })
+        .collect();
+    
+    chart.draw_series(LineSeries::new(curve_points, &BLUE))?;
+
+    chart.draw_series(std::iter::once(Circle::new(
+        (predict_expiry as f64, predicted_iv),
+        8,
+        GREEN.filled(),
+    )))?;
 
     Ok(())
 }
@@ -83,12 +229,12 @@ pub async fn fetch_closest_iv_for_expiry(symbol: &str, expiry: u64, input_strike
         .await?;
     let body = resp.text().await?;
 
-    let document = Html::parse_document(&body);
+    let document = scraper::Html::parse_document(&body);
     let row_selector = Selector::parse("tr.yf-wurt5d.inTheMoney").unwrap();
     let cell_selector = Selector::parse("td.yf-wurt5d").unwrap();
     let bold_selector = Selector::parse("td.bold.yf-wurt5d").unwrap();
 
-    let mut closest_iv: Option<f64> = None;
+    let mut best_iv: Option<f64> = None;
     let mut min_diff = f64::MAX;
 
     for row in document.select(&row_selector) {
@@ -101,10 +247,12 @@ pub async fn fetch_closest_iv_for_expiry(symbol: &str, expiry: u64, input_strike
                 if let Some(iv_cell) = cells.last() {
                     let iv_text = iv_cell.text().collect::<String>().replace('%', "").replace(',', "");
                     if let Ok(iv) = iv_text.trim().parse::<f64>() {
-                        let diff = (strike - input_strike).abs();
-                        if diff < min_diff {
-                            min_diff = diff;
-                            closest_iv = Some(iv / 100.0);
+                        if iv > 0.0 {
+                            let diff = (strike - input_strike).abs();
+                            if diff < min_diff {
+                                min_diff = diff;
+                                best_iv = Some(iv / 100.0);
+                            }
                         }
                     }
                 }
@@ -112,5 +260,29 @@ pub async fn fetch_closest_iv_for_expiry(symbol: &str, expiry: u64, input_strike
         }
     }
 
-    closest_iv.ok_or_else(|| "No in-the-money calls with IV found in HTML".into())
+    best_iv.ok_or_else(|| "No in-the-money calls with nonzero IV found in HTML".into())
+}
+
+pub async fn fetch_stock_price(symbol: &str) -> Result<f64, Box<dyn std::error::Error>> {
+    let url = format!("https://finance.yahoo.com/quote/{}", symbol);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "Mozilla/5.0")
+        .send()
+        .await?;
+    let body = resp.text().await?;
+
+    let document = scraper::Html::parse_document(&body);
+    let price_selector = scraper::Selector::parse(r#"span.base.yf-ipw1h0"#).unwrap();
+
+    if let Some(price_elem) = document.select(&price_selector).next() {
+        let price_text = price_elem.text().collect::<String>().replace(",", "");
+        if let Ok(price) = price_text.trim().parse::<f64>() {
+            return Ok(price);
+        }
+    }
+
+    Err("Could not find or parse stock price".into())
 }
