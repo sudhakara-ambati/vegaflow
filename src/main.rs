@@ -1,5 +1,6 @@
 mod models;
 mod data_fetch;
+mod visualisations;
 use data_fetch::{fetch_stock_price, fetch_risk_free_rate, predict_iv};
 use models::black_scholes::{black_scholes_call, black_scholes_put};
 use models::monte_carlo::monte_carlo_option_price;
@@ -17,7 +18,7 @@ fn time_to_maturity_in_years(expiry_unix: u64) -> f64 {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let fred_api_key = "e714c7e83f3e0d71fd9e5bba60194578"; // fred API key
+    let fred_api_key = ""; // fred API key
 
     let option_type = "call"; // option type
     let symbol = "AAPL"; // stock symbol
