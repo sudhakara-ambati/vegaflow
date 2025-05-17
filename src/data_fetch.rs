@@ -28,7 +28,8 @@ pub async fn predict_iv(
     symbol: &str,
     input_strike: f64,
     predict_expiry: u64,
-    option_type: &str
+    option_type: &str,
+    plot_graph: bool
 ) -> Result<f64, Box<dyn std::error::Error>> {
     let url = format!("https://finance.yahoo.com/quote/{}/options", symbol);
 
@@ -72,7 +73,6 @@ pub async fn predict_iv(
     for expiry in &expiries {
         match fetch_closest_iv_for_expiry(symbol, *expiry, input_strike, option_type).await {
             Ok(iv) => {
-                println!("Expiry {}: Closest IV = {:.2}%", expiry, iv * 100.0);
                 expiry_iv_pairs.push((*expiry as f64, iv));
             }
             Err(e) => println!("Expiry {}: Error fetching IV: {}", expiry, e),
@@ -133,23 +133,19 @@ pub async fn predict_iv(
 
     let predicted_iv = rec_eval(predict_expiry as f64);
 
-    println!(
-        "Predicted IV at expiry {} (reciprocal): {:.2}%",
-        predict_expiry,
-        predicted_iv * 100.0
-    );
-
-    plot_iv_curve_reciprocal(
-        expiries,
-        expiry_iv_pairs,
-        predict_expiry,
-        predicted_iv,
-        x_mean,
-        x_std,
-        best_a,
-        best_b,
-        best_c,
-    )?;
+    if plot_graph {
+        plot_iv_curve_reciprocal(
+            expiries,
+            expiry_iv_pairs,
+            predict_expiry,
+            predicted_iv,
+            x_mean,
+            x_std,
+            best_a,
+            best_b,
+            best_c,
+        )?;
+    }
 
     Ok(predicted_iv)
 }

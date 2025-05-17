@@ -1,6 +1,69 @@
 use plotters::prelude::*;
 use statrs::distribution::{Normal, ContinuousCDF, Continuous};
 
+pub fn plot_volatility_smile(
+    strikes: Vec<f64>,
+    ivs: Vec<f64>,
+    current_stock: f64,
+    k: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new("volatility_smile.png", (800, 600)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let min_strike = *strikes.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let max_strike = *strikes.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let min_iv = *ivs.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    let max_iv = *ivs.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption("Volatility Smile", ("sans-serif", 30))
+        .margin(40)
+        .x_label_area_size(40)
+        .y_label_area_size(60)
+        .build_cartesian_2d(
+            (min_strike * 0.95)..(max_strike * 1.05),
+            (min_iv * 0.95)..(max_iv * 1.05),
+        )?;
+
+    chart.configure_mesh()
+        .x_desc("Strike Price ($)")
+        .y_desc("Implied Volatility")
+        .draw()?;
+
+    chart.draw_series(
+        strikes.iter().zip(ivs.iter()).map(|(&k, &iv)| {
+            Circle::new((k, iv), 5, BLUE.filled())
+        })
+    )?;
+
+    chart.draw_series(LineSeries::new(
+        strikes.iter().zip(ivs.iter()).map(|(&k, &iv)| (k, iv)),
+        &BLUE,
+    ))?;
+
+    chart.draw_series(LineSeries::new(
+        vec![(current_stock, min_iv * 0.95), (current_stock, max_iv * 1.05)],
+        RED.mix(0.5).stroke_width(2),
+    ))?
+    .label("Current Stock Price")
+    .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], RED.mix(0.5).stroke_width(2)));
+
+    chart.draw_series(LineSeries::new(
+        vec![(k, min_iv * 0.95), (k, max_iv * 1.05)],
+        GREEN.mix(0.5).stroke_width(2),
+    ))?
+    .label("Selected Strike")
+    .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], GREEN.mix(0.5).stroke_width(2)));
+
+    chart.configure_series_labels()
+        .background_style(WHITE.mix(0.8))
+        .border_style(BLACK)
+        .draw()?;
+
+    println!("Volatility smile saved as volatility_smile.png");
+    Ok(())
+}
+
 pub fn plot_greeks(
     s0: f64,
     k: f64,
