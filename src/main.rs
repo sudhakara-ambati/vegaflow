@@ -2,7 +2,7 @@ mod models;
 mod data_fetch;
 use data_fetch::{fetch_stock_price, fetch_risk_free_rate, predict_iv};
 use models::black_scholes::{black_scholes_call, black_scholes_put};
-use models::brownian::gbm_price;
+use models::monte_carlo::monte_carlo_option_price;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn time_to_maturity_in_years(expiry_unix: u64) -> f64 {
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let option_type = "call"; // option type
     let symbol = "AAPL"; // stock symbol
-    let expiry = 1778883408; // expiry date
+    let expiry = 1750118762; // expiry date
     let current_stock = fetch_stock_price(symbol).await?; // fetch stock price
     let k = 95.0;       // strike price
     let t = time_to_maturity_in_years(expiry); // time to maturity in years
@@ -29,19 +29,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .expect("Failed to fetch risk-free rate");
     let calculated_iv = predict_iv(symbol, k, expiry, option_type).await?;
-    let s = gbm_price(current_stock, r, calculated_iv, t, 0.5); // gbm stock price
 
     if option_type == "call" {
-        let call_price = black_scholes_call(s, k, t, r, calculated_iv);
-        println!("Black-Scholes Call Price: {:.4}", call_price);
+        let call_price_black_scholes = black_scholes_call(current_stock, k, t, r, calculated_iv);
+        let call_price_monte_carlo = monte_carlo_option_price(current_stock, k, t, r, calculated_iv, option_type, 5000000);
+        println!("Black-Scholes Call Price: {:.9}", call_price_black_scholes);
+        println!("Monte-Carlo Call Price: {:.9}", call_price_monte_carlo);
     }
     if option_type == "put" {
-        let put_price = black_scholes_put(s, k, t, r, calculated_iv);
-        println!("Black-Scholes Put Price: {:.4}", put_price);
+        let put_price_black_scholes = black_scholes_put(current_stock, k, t, r, calculated_iv);
+        let put_price_monte_carlo = monte_carlo_option_price(current_stock, k, t, r, calculated_iv, option_type, 5000000);
+        println!("Black-Scholes Put Price: {:.9}", put_price_black_scholes);
+        println!("Monte-Carlo Put Price: {:.9}", put_price_monte_carlo);
     }
-    println!("Current Stock Price: {:.4}", current_stock);
-    println!("Predicted Stock Price: {:.4}", s);
-
     Ok(())
 }
 

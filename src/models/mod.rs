@@ -1,2 +1,2 @@
 pub mod black_scholes;
-pub mod brownian;
+pub mod monte_carlo;
