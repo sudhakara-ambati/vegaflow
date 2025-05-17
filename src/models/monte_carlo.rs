@@ -1,6 +1,5 @@
 use statrs::distribution::{Normal, ContinuousCDF};
 use rand::prelude::*;
-use plotters::prelude::*;
 use crate::visualisations::visualisations::plot_stock_paths;
 
 pub fn monte_carlo_option_price(

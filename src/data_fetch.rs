@@ -1,5 +1,4 @@
 use serde_json;
-use plotters::prelude::*;
 use scraper::{Selector};
 use nalgebra::{DMatrix, DVector};
 use crate::visualisations::visualisations::plot_iv_curve_reciprocal;
