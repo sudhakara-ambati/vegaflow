@@ -2,7 +2,7 @@ mod models;
 mod data_fetch;
 mod visualisations;
 use data_fetch::{fetch_stock_price, fetch_risk_free_rate, predict_iv};
-use crate::visualisations::visualisations::{plot_greeks, plot_volatility_smile, plot_time_decay};
+use crate::visualisations::visualisations::{plot_greeks, plot_volatility_smile, plot_time_decay, plot_pnl_distribution};
 use models::black_scholes::{black_scholes_call, black_scholes_put};
 use models::monte_carlo::monte_carlo_option_price;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,16 +53,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     plot_volatility_smile(strikes, ivs, current_stock, k)?;
     plot_greeks(current_stock, k, t, r, calculated_iv, option_type)?;
     plot_time_decay(current_stock, k, r, calculated_iv, 180, option_type)?;
+    plot_pnl_distribution(current_stock, k, t, r, calculated_iv, option_type, 100000)?;
 
     if option_type == "call" {
         let call_price_black_scholes = black_scholes_call(current_stock, k, t, r, calculated_iv);
-        let call_price_monte_carlo = monte_carlo_option_price(current_stock, k, t, r, calculated_iv, option_type, 5000000);
+        let call_price_monte_carlo = monte_carlo_option_price(current_stock, k, t, r, calculated_iv, option_type, 100000);
         println!("Black-Scholes Call Price: {:.9}", call_price_black_scholes);
         println!("Monte-Carlo Call Price: {:.9}", call_price_monte_carlo);
     }
     if option_type == "put" {
         let put_price_black_scholes = black_scholes_put(current_stock, k, t, r, calculated_iv);
-        let put_price_monte_carlo = monte_carlo_option_price(current_stock, k, t, r, calculated_iv, option_type, 5000000);
+        let put_price_monte_carlo = monte_carlo_option_price(current_stock, k, t, r, calculated_iv, option_type, 100000);
         println!("Black-Scholes Put Price: {:.9}", put_price_black_scholes);
         println!("Monte-Carlo Put Price: {:.9}", put_price_monte_carlo);
     }

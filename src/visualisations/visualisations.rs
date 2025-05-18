@@ -1,5 +1,120 @@
 use plotters::prelude::*;
 use statrs::distribution::{Normal, ContinuousCDF, Continuous};
+use crate::models::black_scholes::{black_scholes_call, black_scholes_put};
+use rand::prelude::*;
+use std::ops::Range;
+
+pub fn plot_pnl_distribution(
+    s0: f64,
+    k: f64,
+    t: f64,
+    r: f64,
+    sigma: f64,
+    option_type: &str,
+    num_simulations: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new("pnl_distribution.png", (800, 600)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let dt = t / 252.0;
+    let drift = r - 0.5 * sigma * sigma;
+    let vol = sigma * dt.sqrt();
+
+    let normal = Normal::new(0.0, 1.0).unwrap();
+    let mut rng = rand::rng();
+
+    let initial_price = match option_type {
+        "call" => black_scholes_call(s0, k, t, r, sigma),
+        _ => black_scholes_put(s0, k, t, r, sigma),
+    };
+
+    let mut pnls = Vec::with_capacity(num_simulations);
+
+    for _ in 0..num_simulations {
+        let mut price = s0;
+        for _ in 0..252 {
+            let u: f64 = rng.random::<f64>();
+            let z = normal.inverse_cdf(u);
+            price *= (drift * dt + vol * z).exp();
+        }
+        let payoff = match option_type {
+            "call" => (price - k).max(0.0),
+            _ => (k - price).max(0.0),
+        };
+        let pnl = payoff - initial_price;
+        pnls.push(pnl);
+    }
+
+    let min_pnl = pnls.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_pnl = pnls.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    let num_bins = 50;
+    let bin_width = (max_pnl - min_pnl) / num_bins as f64;
+    let mut histogram = vec![0; num_bins];
+    for pnl in &pnls {
+        let bin = ((pnl - min_pnl) / bin_width).floor() as usize;
+        let bin = bin.min(num_bins - 1);
+        histogram[bin] += 1;
+    }
+
+    let prob_profit = pnls.iter().filter(|&&x| x > 0.0).count() as f64 / pnls.len() as f64;
+    let avg_pnl = pnls.iter().sum::<f64>() / pnls.len() as f64;
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption(format!("{} Option PnL Distribution (K=${:.2})",
+                        if option_type == "call" { "Call" } else { "Put" }, k),
+                ("sans-serif", 30))
+        .margin(40)
+        .x_label_area_size(40)
+        .y_label_area_size(60)
+        .build_cartesian_2d(min_pnl..max_pnl, 0..(*histogram.iter().max().unwrap() + 1))?;
+
+    chart.configure_mesh()
+        .x_desc("Profit/Loss ($)")
+        .y_desc("Frequency")
+        .draw()?;
+
+    let bars: Vec<(Range<f64>, u32)> = histogram.iter().enumerate()
+        .map(|(i, &count)| {
+            let left = min_pnl + i as f64 * bin_width;
+            let right = left + bin_width;
+            (left..right, count)
+        })
+        .collect();
+
+    chart.draw_series(
+        bars.iter().map(|(range, count)| {
+            let color = if range.start < 0.0 && range.end <= 0.0 {
+                RED.filled()
+            } else if range.start >= 0.0 && range.end > 0.0 {
+                GREEN.filled()
+            } else {
+                BLUE.filled()
+            };
+            Rectangle::new([(range.start, 0), (range.end, *count)], color)
+        })
+    )?;
+
+    chart.draw_series(LineSeries::new(
+        vec![(0.0, 0), (0.0, *histogram.iter().max().unwrap())],
+        BLACK.stroke_width(2),
+    ))?;
+
+    chart.draw_series(std::iter::once(Text::new(
+        format!("Probability of Profit: {:.1}%", prob_profit * 100.0),
+        (min_pnl + (max_pnl - min_pnl) * 0.1, *histogram.iter().max().unwrap() as u32 * 9 / 10),
+        ("sans-serif", 20).into_font().color(&BLACK),
+    )))?;
+
+    chart.draw_series(std::iter::once(Text::new(
+        format!("Average P&L: ${:.2}", avg_pnl),
+        (min_pnl + (max_pnl - min_pnl) * 0.1, *histogram.iter().max().unwrap() as u32 * 8 / 10),
+        ("sans-serif", 20).into_font().color(&BLACK),
+    )))?;
+
+    println!("PnL distribution saved as pnl_distribution.png");
+    Ok(())
+}
 
 pub fn plot_time_decay(
     s0: f64,
@@ -9,7 +124,6 @@ pub fn plot_time_decay(
     max_days: usize,
     option_type: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::models::black_scholes::{black_scholes_call, black_scholes_put};
     
     let max_days = max_days.min(60);
     
