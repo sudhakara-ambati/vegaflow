@@ -2,7 +2,7 @@ mod models;
 mod data_fetch;
 mod visualisations;
 use data_fetch::{fetch_stock_price, fetch_risk_free_rate, predict_iv};
-use crate::visualisations::visualisations::{plot_greeks, plot_volatility_smile};
+use crate::visualisations::visualisations::{plot_greeks, plot_volatility_smile, plot_time_decay};
 use models::black_scholes::{black_scholes_call, black_scholes_put};
 use models::monte_carlo::monte_carlo_option_price;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,7 +21,6 @@ fn time_to_maturity_in_years(expiry_unix: u64) -> f64 {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fred_api_key = ""; // fred API key
-
     let option_type = "call"; // option type
     let symbol = "AAPL"; // stock symbol
     let expiry = 1750118762; // expiry date
@@ -53,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
     plot_volatility_smile(strikes, ivs, current_stock, k)?;
     plot_greeks(current_stock, k, t, r, calculated_iv, option_type)?;
+    plot_time_decay(current_stock, k, r, calculated_iv, 180, option_type)?;
 
     if option_type == "call" {
         let call_price_black_scholes = black_scholes_call(current_stock, k, t, r, calculated_iv);

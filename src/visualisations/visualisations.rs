@@ -1,6 +1,117 @@
 use plotters::prelude::*;
 use statrs::distribution::{Normal, ContinuousCDF, Continuous};
 
+pub fn plot_time_decay(
+    s0: f64,
+    k: f64,
+    r: f64,
+    sigma: f64,
+    max_days: usize,
+    option_type: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::models::black_scholes::{black_scholes_call, black_scholes_put};
+    
+    let max_days = max_days.min(60);
+    
+    let root = BitMapBackend::new("time_decay_curve.png", (800, 600)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let mut option_prices: Vec<(f64, f64)> = Vec::with_capacity(max_days + 1);
+    let mut intrinsic_values: Vec<(f64, f64)> = Vec::with_capacity(max_days + 1);
+    let mut time_values: Vec<(f64, f64)> = Vec::with_capacity(max_days + 1);
+    
+    for day in 0..=max_days {
+        let actual_day = max_days - day;
+        let t = actual_day as f64 / 365.0;
+        
+        let price = match option_type {
+            "call" => black_scholes_call(s0, k, t, r, sigma),
+            _ => black_scholes_put(s0, k, t, r, sigma),
+        };
+        
+        let intrinsic = match option_type {
+            "call" => (s0 - k).max(0.0),
+            _ => (k - s0).max(0.0),
+        };
+        
+        let time_value = price - intrinsic;
+        
+        option_prices.push((day as f64, price));
+        intrinsic_values.push((day as f64, intrinsic));
+        time_values.push((day as f64, time_value));
+    }
+
+    let max_price = option_prices.iter().map(|(_, p)| *p).fold(0.0, f64::max);
+    let min_price = intrinsic_values.iter().map(|(_, p)| *p).fold(f64::INFINITY, f64::min);
+    let price_range = max_price - min_price;
+    
+    let y_min = (min_price - price_range * 0.05).max(0.0);
+    let y_max = max_price + price_range * 0.05;
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption(format!("{} Option Time Decay (K=${:.2})", 
+                        if option_type == "call" { "Call" } else { "Put" }, k), 
+                ("sans-serif", 30))
+        .margin(40)
+        .x_label_area_size(40)
+        .y_label_area_size(60)
+        .build_cartesian_2d(0f64..(max_days as f64), y_min..y_max)?;
+
+    chart.configure_mesh()
+        .x_desc("Days Remaining Until Expiry")
+        .y_desc("Option Price ($)")
+        .draw()?;
+
+    chart.draw_series(LineSeries::new(
+        intrinsic_values,
+        BLUE.mix(0.5).stroke_width(1),
+    ))?
+    .label("Intrinsic Value")
+    .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], BLUE.mix(0.5).stroke_width(1)));
+
+    chart.draw_series(LineSeries::new(
+        time_values,
+        GREEN.stroke_width(2),
+    ))?
+    .label("Time Value")
+    .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], GREEN.stroke_width(2)));
+
+    chart.draw_series(LineSeries::new(
+        option_prices.clone(),
+        RED.stroke_width(2),
+    ))?
+    .label("Option Price")
+    .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], RED.stroke_width(2)));
+
+    let markers = [30, 20, 10];
+    for &days in markers.iter() {
+        if days <= max_days {
+            let day_idx = max_days - days;
+            if let Some((day, price)) = option_prices.get(day_idx) {
+                chart.draw_series(std::iter::once(Circle::new(
+                    (*day, *price),
+                    5,
+                    BLACK.filled(),
+                )))?;
+                
+                chart.draw_series(std::iter::once(Text::new(
+                    format!("{} days: ${:.2}", days, *price),
+                    (*day + 2.0, *price),
+                    ("sans-serif", 15).into_font().color(&BLACK),
+                )))?;
+            }
+        }
+    }
+
+    chart.configure_series_labels()
+        .background_style(WHITE.mix(0.8))
+        .border_style(BLACK)
+        .draw()?;
+
+    println!("Time decay curve saved as time_decay_curve.png");
+    Ok(())
+}
+
 pub fn plot_volatility_smile(
     strikes: Vec<f64>,
     ivs: Vec<f64>,
